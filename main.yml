@@ -1,0 +1,90 @@
+- name: check for install complete flag
+  register: install_flag
+  stat: path={{ STAGE_HOME }}/install_complete
+- name: Running Installation
+  block:
+    - name: Create the directory structure for superset
+      file:
+        mode: "{{ DEFAULT_DIRECTORY_PERMS }}"
+        path: "{{ item }}"
+        state: directory
+      with_items:
+        - "{{ STAGE_HOME }}"
+        - "{{ CUBE_LOGS }}/superset"
+        - "{{ STAGE_HOME }}/nc_bin"
+        - "{{ STAGE_LOCATION }}"
+        - "{{ NC_HOME }}/superset"
+
+    - name: copy and unzip apache_superset
+      unarchive:
+        src: "{{ PACKAGE_STORE }}/{{ PACKAGE_PATHS.superset }}"
+        dest: "{{ STAGE_HOME }}"
+
+    - import_tasks: install.yml
+      tags:
+        - configuration
+
+    - name: create the management scripts
+      template:
+        src: "{{ item }}"
+        dest: "{{ STAGE_HOME }}/nc_bin/{{ item | regex_replace('.j2$', '') }}"
+        mode: "{{ DEFAULT_EXEC_FILE_PERMS }}"
+      with_items:
+        - status.sh
+        - start.sh
+        - stop.sh
+        - common.sh.j2
+      tags:
+        - configuration
+        - superset_pmtool_management_scripts
+        - pmtool_management_scripts
+
+    - name: Find all the nc_bin files
+      check_mode: no
+      tags:
+        - configuration
+      find:
+        paths: "{{ STAGE_HOME }}"
+        file_type: file
+        recurse: yes
+        patterns: "*.sh,*.ksh"
+      register: bin_files
+
+    - name: Give the bin the execute privs
+      tags:
+        - configuration
+      file:
+        path: "{{ item.path }}"
+        mode: "{{ DEFAULT_EXEC_FILE_PERMS }}"
+      with_items:
+        - "{{ bin_files.files }}"
+    - name: Make the directory where superset version will be stored
+      file:
+        state: directory
+        path: "{{ item }}"
+        mode: "{{ DEFAULT_DIRECTORY_PERMS }}"
+      with_items:
+        - "{{ STAGE_HOME }}/component-version"
+
+    - name: Check no versions file already exists
+      file: state=absent path="{{ STAGE_HOME }}/component-version/oam_installed_packages"
+
+    - name: Write out the Component Versions file
+      lineinfile:
+        path: "{{ STAGE_HOME }}/component-version/oam_installed_packages"
+        line: "{{ SOFTWARE_VERSIONS[item] }}"
+        state: present
+        create: yes
+      with_items:
+        - "{{ APPLICATION_COMPONENTS.SUPERSET }}"
+
+    - name: "Fetch the component versions file to Installer Home"
+      fetch: dest={{ SYSTEM_INFORMATION_FOLDER }}/{{ inventory_hostname }}/{{ COMPONENT_NAME }}/{{ STAGE_MD5 }} src={{ STAGE_HOME }}/component-version/oam_installed_packages validate_checksum=yes flat=yes
+#    - name: starting superset using script
+#      shell:
+#        cmd: /u02/netcracker/cube/STAGE/superset/supersetenv/bin/superset db upgrade
+#      args:
+#        chdir: "{{ STAGE_LOCATION }}/superset/"
+
+  when:
+    - not (install_flag.stat.exists|d('False')|bool == true and quit_if_installed|d('True')|bool == true)
