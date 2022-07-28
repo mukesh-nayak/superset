@@ -1,0 +1,169 @@
+---
+- name: make a directory to copy the required pip packages to the remote server (first mkdir)
+  file:
+    state: directory
+    path: "{{ STAGE_HOME }}/build/superset"
+  when: not (DO_NOT_USE_ROOT|bool and SUPERSET_GLOBAL.DO_NOT_USE_ROOT|d('true')|bool)
+
+- name: copy rpms to remote servers
+  copy:
+    src: "{{ item }}"
+    dest: "{{ STAGE_HOME }}/build/superset/{{ item|basename }}"
+  with_items: "{{ SUPERSET_CONFIG_FILE.yum_packages }}"
+  when:
+    - not (DO_NOT_USE_ROOT|bool and SUPERSET_GLOBAL.DO_NOT_USE_ROOT|d('true')|bool)
+    - '"/" in item'
+- name: install yum packages required by superset
+  include_tasks: "{{ INSTALLER_HOME }}/plays/include/yum.yml"
+  vars:
+    IU_YUM_PACKAGES:
+      "{{ SUPERSET_CONFIG_FILE.yum_packages| map('regex_replace','.*/', STAGE_HOME + '/build/superset/') | list }}"
+    OVERRIDE_DO_NOT_USE_ROOT: "{{ 'false' if SUPERSET_GLOBAL.DO_NOT_USE_ROOT|d('true')|bool == false else 'true' }}"
+
+- name: remove temporary directory
+  file:
+    state: absent
+    path: "{{ STAGE_HOME }}/build/superset"
+  when: not (DO_NOT_USE_ROOT|bool and SUPERSET_GLOBAL.DO_NOT_USE_ROOT|d('true')|bool)
+
+- name: copy the required pip packages to the remote server (first mkdir)
+  file:
+    state: directory
+    path: "{{ STAGE_HOME }}/build/superset"
+  when: not (DO_NOT_USE_ROOT|bool and SUPERSET_GLOBAL.DO_NOT_USE_ROOT|d('true')|bool)
+- name: create virtualenv via pip
+#  become: true
+  shell:
+    cmd: python3.8 -m venv oamenv
+    chdir: "{{ STAGE_HOME }}/superset"
+
+- name: copy the required pip packages to the remote server
+  copy:
+    src: "{{ PACKAGE_STORE }}/{{ package.package_store_subdir }}/{{ package.name }}"
+    dest: "{{ STAGE_HOME }}/build/superset/{{ package.name }}"
+  loop_control:
+    loop_var: package
+  with_items:
+    - "{{ SUPERSET_CONFIG_FILE.pip_packages }}"
+  when:
+    - not (DO_NOT_USE_ROOT|bool and SUPERSET_GLOBAL.DO_NOT_USE_ROOT|d('true')|bool)
+    - package.package_store_subdir is defined
+
+- name: Install pip packages for superset
+  become: true
+  pip:
+    name: "{% if package.package_store_subdir is defined %}file://{{ STAGE_HOME }}/build/superset/{% endif %}{{ package.name }}{% if package.version is defined %}=={{ package.version }}{% endif %}"
+    state: "{{ package.state }}"
+    umask: "{{ package.umask }}"
+    virtualenv: "{{ STAGE_HOME }}/superset/oamenv"
+    virtualenv_python: python3.8
+  loop_control:
+    loop_var: package
+  with_items:
+    - "{{ SUPERSET_CONFIG_FILE.pip_packages }}"
+  when:
+    - not (DO_NOT_USE_ROOT|bool and SUPERSET_GLOBAL.DO_NOT_USE_ROOT|d('true')|bool)
+
+#- name: upgrade pip
+#  become: true
+#  pip:
+#    name: ['pip', 'setuptools']
+#    state: latest
+#    virtualenv: "{{ STAGE_HOME }}/superset/oamenv"
+#    virtualenv_python: python3.8
+
+
+#- name: install additional pkg
+#  become: true
+#  shell:
+#    name: source "{{ STAGE_HOME }}/oamenv/bin/activate" ; /usr/local/bin/python3.8 -m pip install openpyxl psycopg2-binary flask-wtf==0.14.3
+#    chdir: "{{ STAGE_HOME }}/oamenv"
+
+#- name: upgrade pip and setuptools
+#  become: true
+#  become_user: root
+#  shell:
+#    cmd: source  "{{ STAGE_HOME }}/superset/oamenv/bin/activate" ;  /usr/local/bin/python3.8 -m pip install --upgrade pip setuptools
+#    chdir: "{{ STAGE_HOME }}"
+
+#- name: install from requirement files
+#  become: true
+#  become_user: root
+#  shell:
+#    cmd: source  "{{ STAGE_HOME }}/superset/oamenv/bin/activate" ; /usr/local/bin/python3.8 -m pip install --no-cache-dir -r requirements/local.txt
+#    chdir: "{{ STAGE_HOME }}"
+
+#- name: superset installation
+#  become: true
+#  become_user: root
+#  shell:
+#    cmd: source  "{{ STAGE_HOME }}/superset/oamenv/bin/activate" ; /usr/local/bin/python3.8 -m pip install -e .
+#    chdir: "{{ STAGE_HOME }}"
+
+
+#- name: Starting Applying DB migrations
+#  shell:
+#    cmd: source  "{{ STAGE_HOME }}/superset/oamenv/bin/activate" ; superset db upgrade
+#    chdir: "{{ STAGE_HOME }}/superset"
+- name: Setup NPM to use http:// version of the registry
+  command: npm config set registry "https://artifactorycn.netcracker.com/api/npm/pd.sandbox-release.npm.group/"
+- name: Disable NPM strict SSL mode
+  command: npm config set strict-ssl false
+#  args:
+#    chdir: "{{ STAGE_HOME }}/superset/superset-frontend/"
+#  environment:
+#    PATH: /usr/local/lib/nodejs/node-v16.13.2-linux-x64/bin
+
+- name: npm ci
+  command: npm ci
+  args:
+    chdir: "{{ STAGE_HOME }}/superset/superset-frontend/"
+#  environment:
+#    PATH: /usr/local/lib/nodejs/node-v16.13.2-linux-x64/bin
+
+- name: npm run build
+  command:  npm run build
+  args:
+    chdir: "{{ STAGE_HOME }}/superset/superset-frontend/"
+#  environment:
+#    PATH: /usr/local/lib/nodejs/node-v16.13.2-linux-x64/bin
+
+- name: installing browser
+  shell: |
+    wget https://artifactorycn.netcracker.com/nc.thirdparty.files/mozilla/geckodriver/v0.28.0/geckodriver-v0.28.0-linux64.tar.gz -O /tmp/geckodriver.tar.gz
+    tar xvfz /tmp/geckodriver.tar.gz -C /tmp
+    sudo mv /tmp/geckodriver /usr/bin/geckodriver
+    sudo rm /tmp/geckodriver.tar.gz
+    echo "Firefox and geckodriver installing finished"
+
+- name: starting superset using script
+  ignore_errors: yes
+  shell:
+    cmd: "{{ item }}"
+  args:
+    chdir: "{{ STAGE_HOME }}/superset/superset"
+  with_items:
+    - ". {{ STAGE_HOME }}/superset/oamenv/bin/activate; superset db upgrade"
+
+- name: create a admin user
+  shell:
+    cmd: "{{ item }}"
+  args:
+    chdir: "{{ STAGE_HOME }}/superset/superset"
+  with_items:
+    - ". {{ STAGE_HOME }}/superset/oamenv/bin/activate; superset fab create-admin  --username {{ superset_username }} --password {{ superset_pass }} --firstname {{ superset_firstname }} --lastname {{ superset_lastname }} --email {{ superset_email }}"
+#    when: "'username:' ~ superset_username not in superset_listed_users.stdout
+- name: Create default roles and permissions
+  shell:
+    cmd: "{{ item }}"
+  args:
+    chdir: "{{ STAGE_HOME }}/superset/superset"
+  with_items:
+    - ". {{ STAGE_HOME }}/superset/oamenv/bin/activate; superset init"
+#- name: start a development web server on port 8088
+#  shell:
+#    cmd: "{{ item }}"
+#  args:
+#    chdir: "{{ STAGE_HOME }}/superset/superset"
+#  with_items:
+#    - ". {{ STAGE_HOME }}/superset/oamenv/bin/activate; nohup superset run -h 192.168.0.11 -p 8088 --with-threads --reload --debugger >> /tmp/superset.log.$(date +%F) 2>&1 &"
